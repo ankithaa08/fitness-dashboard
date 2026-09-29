@@ -4,16 +4,29 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
-import glob
 
 # Page configuration
 st.set_page_config(page_title="Fitness Dashboard", page_icon="📈", layout="wide")
-sns.set_theme(style="whitegrid") # Set seaborn theme for better looking charts
+sns.set_theme(style="whitegrid")
 
-# Initialize DuckDB connection
+import zipfile
+
+# Initialize connection to the merged database file
+DB_FILE = 'fitness.db'
+ZIP_FILE = 'fitness.zip'
+
 @st.cache_resource
 def get_db_connection():
-    return duckdb.connect(database=':memory:')
+    # If the database doesn't exist but a ZIP file does, extract it!
+    if not os.path.exists(DB_FILE) and os.path.exists(ZIP_FILE):
+        with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
+            zip_ref.extractall('.')
+            
+    # If the file doesn't exist, create an in-memory DB so the app doesn't crash
+    if os.path.exists(DB_FILE):
+        return duckdb.connect(database=DB_FILE, read_only=False)
+    else:
+        return duckdb.connect(database=':memory:')
 
 con = get_db_connection()
 
@@ -21,38 +34,21 @@ con = get_db_connection()
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["📊 PowerBI-Style Dashboard", "🧹 Data Cleaning (SQL)", "🔍 SQL Insights & Analysis", "📂 Data Overview"])
 
-# Directory input
-st.sidebar.markdown("---")
-st.sidebar.subheader("Data Source")
-data_dir = st.sidebar.text_input("Enter the path to your CSV folder (e.g., D:\FitnessData):", value="data")
+# Check if tables exist
+tables_df = con.execute("SHOW TABLES").fetchdf()
+has_data = not tables_df.empty
 
-def get_csv_files(directory):
-    if not os.path.exists(directory):
-        return []
-    return glob.glob(os.path.join(directory, "*.csv"))
-
-csv_files = get_csv_files(data_dir)
-
-if not csv_files:
-    st.warning(f"⚠️ No CSV files found in `{data_dir}`! Please enter the correct folder path.")
+if not has_data:
+    st.sidebar.warning(f"⚠️ No data found! Make sure `{DB_FILE}` is in the same folder as this app.")
 else:
-    # Register CSV files as views in DuckDB
-    for file_path in csv_files:
-        table_name = os.path.splitext(os.path.basename(file_path))[0]
-        table_name = "".join([c if c.isalnum() else "_" for c in table_name])
-        safe_path = file_path.replace("\\", "/")
-        try:
-            con.execute(f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_csv_auto('{safe_path}')")
-        except Exception as e:
-            st.sidebar.error(f"Failed to load {file_path}: {e}")
-    st.sidebar.success(f"Loaded {len(csv_files)} datasets.")
+    st.sidebar.success(f"Connected to Database! Found {len(tables_df)} datasets.")
+
 
 # ----------------- PAGE: DATA OVERVIEW -----------------
 if page == "📂 Data Overview":
     st.title("📂 Data Overview")
-    if csv_files:
-        tables = con.execute("SHOW TABLES").fetchdf()
-        for idx, row in tables.iterrows():
+    if has_data:
+        for idx, row in tables_df.iterrows():
             t_name = row['name']
             st.subheader(f"Dataset: `{t_name}`")
             try:
@@ -61,18 +57,17 @@ if page == "📂 Data Overview":
             except Exception:
                 st.error(f"Could not read preview for {t_name}")
     else:
-        st.info("Please connect your data folder first.")
-
+        st.info("No data available.")
 
 # ----------------- PAGE: DATA CLEANING (SQL) -----------------
 elif page == "🧹 Data Cleaning (SQL)":
     st.title("🧹 Data Cleaning with SQL")
     st.markdown("""
-    Use this section to clean your raw data (e.g., handle nulls, cast data types, filter out outliers) and create new **Clean Views**. 
-    For example: `CREATE OR REPLACE VIEW clean_workouts AS SELECT date, COALESCE(calories, 0) as calories FROM raw_workouts WHERE calories > 0`
+    Use this section to clean your raw data (e.g., handle nulls, cast data types) and create new **Clean Views**. 
+    Example: `CREATE OR REPLACE VIEW clean_data AS SELECT * FROM raw_table WHERE calories > 0`
     """)
     
-    if csv_files:
+    if has_data:
         cleaning_query = st.text_area("Write your SQL Data Cleaning Query (CREATE VIEW ...):", height=150)
         
         if st.button("🧹 Execute Cleaning Query"):
@@ -83,20 +78,17 @@ elif page == "🧹 Data Cleaning (SQL)":
                 st.error(f"SQL Error: {e}")
                 
         st.markdown("### Currently Available Tables & Views")
-        tables = con.execute("SHOW TABLES").fetchdf()
-        st.dataframe(tables)
+        st.dataframe(con.execute("SHOW TABLES").fetchdf())
     else:
-        st.info("Please connect your data folder first.")
-
+        st.info("No data available.")
 
 # ----------------- PAGE: SQL INSIGHTS -----------------
 elif page == "🔍 SQL Insights & Analysis":
     st.title("🔍 SQL Insights & Analysis")
     st.markdown("Write raw SQL queries against your cleaned data to generate insights.")
     
-    if csv_files:
-        tables = con.execute("SHOW TABLES").fetchdf()
-        st.write("**Available Tables/Views:**", ", ".join([f"`{t}`" for t in tables['name']]))
+    if has_data:
+        st.write("**Available Tables/Views:**", ", ".join([f"`{t}`" for t in tables_df['name']]))
         
         query = st.text_area("Enter your SQL Query to generate insights:", height=150)
         
@@ -107,17 +99,18 @@ elif page == "🔍 SQL Insights & Analysis":
                 st.dataframe(result_df, use_container_width=True)
             except Exception as e:
                 st.error(f"SQL Error: {e}")
-
+    else:
+        st.info("No data available.")
 
 # ----------------- PAGE: DASHBOARD (POWER BI STYLE) -----------------
 elif page == "📊 PowerBI-Style Dashboard":
     st.title("📊 Interactive Fitness Dashboard")
     st.markdown("A Tableau/PowerBI style dashboard using **Matplotlib** and **Seaborn**.")
     
-    if csv_files:
-        tables = con.execute("SHOW TABLES").fetchdf()['name'].tolist()
+    if has_data:
+        tables = tables_df['name'].tolist()
         
-        # Dashboard Controls (like PowerBI slicers)
+        # Dashboard Controls
         st.markdown("### 🎛️ Dashboard Controls")
         col_ctrl1, col_ctrl2 = st.columns(2)
         with col_ctrl1:
@@ -126,7 +119,7 @@ elif page == "📊 PowerBI-Style Dashboard":
         try:
             df = con.execute(f"SELECT * FROM {selected_table}").fetchdf()
             
-            # Key Performance Indicators (KPIs) like PowerBI KPI cards
+            # Key Performance Indicators (KPIs)
             st.markdown("### 📈 Key Metrics")
             numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
             
@@ -138,9 +131,8 @@ elif page == "📊 PowerBI-Style Dashboard":
             elif len(numeric_cols) > 0:
                 st.metric(label=f"Total {numeric_cols[0]}", value=round(df[numeric_cols[0]].sum(), 2))
 
-            # Visualizations using Seaborn/Matplotlib
+            # Visualizations
             st.markdown("### 🎨 Visualizations")
-            
             chart_col1, chart_col2 = st.columns(2)
             
             with chart_col1:
@@ -148,7 +140,6 @@ elif page == "📊 PowerBI-Style Dashboard":
                 if len(numeric_cols) > 0:
                     fig1, ax1 = plt.subplots(figsize=(6, 4))
                     sns.histplot(data=df, x=numeric_cols[0], kde=True, ax=ax1, color="skyblue")
-                    ax1.set_title(f"Distribution of {numeric_cols[0]}")
                     st.pyplot(fig1)
                     
             with chart_col2:
@@ -158,15 +149,13 @@ elif page == "📊 PowerBI-Style Dashboard":
                     ax2.scatter(df[numeric_cols[0]], df[numeric_cols[1]], alpha=0.5, color="coral")
                     ax2.set_xlabel(numeric_cols[0])
                     ax2.set_ylabel(numeric_cols[1])
-                    ax2.set_title(f"{numeric_cols[0]} vs {numeric_cols[1]}")
                     ax2.grid(True, linestyle='--', alpha=0.7)
                     st.pyplot(fig2)
                     
-            # Full table view
             st.markdown("### 📋 Detailed Data View")
             st.dataframe(df, use_container_width=True)
             
         except Exception as e:
             st.error(f"Error building dashboard: {e}")
     else:
-        st.info("Please connect your data folder first.")
+        st.info("No data available.")
